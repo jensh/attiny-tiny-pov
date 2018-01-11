@@ -1,0 +1,5 @@
+*.d
+*.o
+*~
+/led_circle.elf
+/pov.elf

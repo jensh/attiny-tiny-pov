@@ -1,0 +1,145 @@
+# (c) 2016-01-20 Jens Hauke <jens.hauke@4k2.de>               -*- makefile -*-
+#
+# Include make.rules into your Makefile
+# include "make.rules"
+#
+all:
+
+MCU_TARGET?=attiny13a
+#F_CPU= 128000L
+#F_CPU= 600000L
+#F_CPU=1200000L
+#F_CPU=2400000L
+#F_CPU=4800000L
+#F_CPU=9600000L
+
+#defaults for F_CPU
+F_CPU_attiny13a?=1200000L
+F_CPU_attiny13?=1200000L
+F_CPU_attiny45?=1000000L
+F_CPU_attiny85?=1000000L
+F_CPU_atmega328p?=16000000L
+F_CPU_$(MCU_TARGET)?="F_CPU_DEFAULT_$(MCU_TARGET)"
+
+#F_CPU for $(MCU_TARGET)"
+F_CPU?=$(F_CPU_$(MCU_TARGET))
+
+PROGRAMMER?=usbasp
+# PROGRAMMER_TARGET=MCU_TARGET but use attiny13 for attiny13a:
+PROGRAMMER_TARGET?=$(patsubst attiny13a, attiny13, $(MCU_TARGET))
+# Additional Options:
+PROGRAMMER_OPTIONS?=
+
+CC = avr-gcc
+CPPFLAGS += -MMD
+CPPFLAGS += -DF_CPU=$(F_CPU)
+TARGET_MACH += -mmcu=$(MCU_TARGET)
+TARGET_ARCH += -mmcu=$(MCU_TARGET)
+CFLAGS   += -Os -Wall -W -Wno-unused-parameter -g
+# CFLAGS   += -Werror
+# Create seperate sections for each function and data
+CFLAGS   += -ffunction-sections -fdata-sections
+CXXFLAGS += -fno-exceptions -fno-threadsafe-statics
+LDFLAGS  += -lm
+# GC sections (remove unused code). Require -ffunction-sections -fdata-sections!
+LDFLAGS  +=  -Wl,--gc-sections
+
+LDLIBS += $(LDLIBS_$@)
+OBJCOPY = avr-objcopy
+OBJDUMP = avr-objdump
+#########################################################
+
+# PROGS += program.elf
+# LDLIBS_program +=
+# test: test@program.elf
+
+#########################################################
+%.elf: %.o
+	$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@
+#	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+# Do not remove intermediate %.o files (https://www.gnu.org/software/make/manual/make.html)
+.PRECIOUS: %.o
+
+# Disabled direct rule .elf from .c as it fails with -MMD
+#%.elf: %.c
+#	$(LINK.c) $^ $(LOADLIBES) $(LDLIBS) -o $@
+#	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS)
+
+%.hex: %.elf
+	$(OBJCOPY) -R .eeprom -O ihex $< $@
+
+%.srec: %.elf
+	$(OBJCOPY) -R .eeprom -O srec $< $@
+
+%.bin: %.elf
+	$(OBJCOPY) -R .eeprom -O binary $< $@
+
+# Rules for building the .eeprom rom images
+%_eeprom.hex: %.elf
+	$(OBJCOPY) -j .eeprom --set-section-flags=.eeprom=alloc,load --change-section-lma .eeprom=0 -O ihex $< $@
+
+%_eeprom.srec: %.elf
+	$(OBJCOPY) -j .eeprom --set-section-flags=.eeprom=alloc,load --change-section-lma .eeprom=0 -O srec $< $@
+
+%_eeprom.bin: %.elf
+	$(OBJCOPY) -j .eeprom --set-section-flags=.eeprom=alloc,load --change-section-lma .eeprom=0 -O binary $< $@
+
+PROG_FIRST=$(patsubst %.elf,%,$(firstword $(PROGS)))
+
+flash:	flash@$(PROG_FIRST)
+
+flash@%: %.hex check@%
+	avrdude -v -p$(PROGRAMMER_TARGET) -c$(PROGRAMMER) $(PROGRAMMER_OPTIONS) -Uflash:w:$<:i
+
+check:	$(patsubst %.elf, check@%, $(PROGS))
+
+check@%: %.elf
+	@avr-size $< -A |grep -e '\.data *0 ' > /dev/null \
+	|| { echo -e "\n$(patsubst %.elf, %.c, $(<)):1: warning:" \
+	" .data section size !=0. Is PROGMEM usable instead?\n"; \
+	avr-objdump -j .data -s $< ; avr-size $< -A ; }
+
+dump:	dump@$(PROG_FIRST)
+
+dump@%: %.elf check@%
+#	avr-objdump -dlS $<
+	avr-objdump -j .data -s $<
+	avr-objdump -dS $<
+	@echo
+	avr-size $<
+
+#########################################################
+# test@prog: diff `prog <prog.in` with prog.out
+%.in:
+	touch $@ #< empty input
+
+test@%: % %.in
+	@touch .clean.$*.output
+	$(abspath $<) < $*.in > $*.output
+	diff -U 5 -p $*.output $*.out
+#########################################################
+
+OBJECTS  += $(wildcard *.o)
+DEPFILES := $(wildcard *.d)
+CLEAN    += $(patsubst .clean.%,%, $(wildcard .clean.*)) $(wildcard .clean.*)
+CLEAN    += $(OBJECTS) $(DEPFILES)
+CLEAN    += $(PROGS) $(patsubst %.elf, %.hex, $(PROGS))
+MRPROPPER+= $(wildcard *~)
+
+all: $(PROGS) $(patsubst %.elf, %.hex, $(PROGS))
+	avr-size $(PROGS)
+
+# make autocompletions:
+$(PROGS):
+$(patsubst %.elf, %.hex, $(PROGS)):
+$(patsubst %.elf, flash@%, $(PROGS)):
+$(patsubst %.elf, dump@%, $(PROGS)):
+
+clean:
+	$(RM) $(CLEAN)
+
+mrpropper distclean:
+	$(RM) $(CLEAN) $(MRPROPPER)
+
+-include $(DEPFILES) dummy.d
